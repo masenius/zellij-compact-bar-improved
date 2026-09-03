@@ -39,6 +39,7 @@ struct State {
     // Tab state
     tabs: Vec<TabInfo>,
     active_tab_idx: usize,
+    pane_manifest: PaneManifest,
 
     // Display state
     mode_info: ModeInfo,
@@ -296,13 +297,16 @@ impl State {
     }
 
     fn handle_pane_update(&mut self, pane_manifest: PaneManifest) -> bool {
+        let manifest_changed = self.pane_manifest != pane_manifest;
+        self.pane_manifest = pane_manifest;
+
         if self.toggle_tooltip_key.is_some() {
             let previous_tooltip_state = self.tooltip_is_active;
-            self.tooltip_is_active = self.detect_tooltip_presence(&pane_manifest);
-            self.own_tab_index = self.find_own_tab_index(&pane_manifest);
-            previous_tooltip_state != self.tooltip_is_active
+            self.tooltip_is_active = self.detect_tooltip_presence(&self.pane_manifest);
+            self.own_tab_index = self.find_own_tab_index(&self.pane_manifest);
+            manifest_changed || previous_tooltip_state != self.tooltip_is_active
         } else {
-            false
+            manifest_changed
         }
     }
 
@@ -587,6 +591,7 @@ impl State {
 
         for tab in &self.tabs {
             let tab_name = self.get_tab_display_name(tab);
+            let process_name = self.get_process_name_for_tab(tab);
 
             if tab.active {
                 active_tab_index = tab.position;
@@ -604,6 +609,7 @@ impl State {
                 self.mode_info.capabilities,
                 dimmed,
                 &self.tab_format,
+                &process_name,
             );
 
             is_alternate_tab = !is_alternate_tab;
@@ -624,6 +630,25 @@ impl State {
             tab_name = "Enter name...".to_string();
         }
         tab_name
+    }
+
+    fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
+        let Some(panes) = self.pane_manifest.panes.get(&tab.position) else {
+            return tab.name.clone();
+        };
+        if let Some(pane) = panes
+            .iter()
+            .find(|p| p.is_focused && !p.is_floating && !p.is_suppressed && !p.is_plugin)
+        {
+            return pane.title.clone();
+        }
+        if let Some(pane) = panes
+            .iter()
+            .find(|p| p.is_focused && !p.is_suppressed && !p.is_plugin)
+        {
+            return pane.title.clone();
+        }
+        tab.name.clone()
     }
 }
 
