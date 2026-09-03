@@ -39,7 +39,8 @@ remembered afterwards.
 |-------------|-------------|
 | `{index}` | 1-based tab position (matches `GoToTab N`) |
 | `{name}` | Tab name |
-| `{process}` | Name of the current foreground process in the tab's active pane (e.g. `nvim`, `zsh`; falls back to the tab name until the process is reported) |
+| `{process}` | Current foreground process in the tab's active pane — in a shell this is the current folder's basename (e.g. `myproject`); otherwise the process name (e.g. `nvim`). Falls back to the tab name until reported |
+| `{cwd}` | Basename of the current working directory of the tab's active pane (e.g. `myproject`; falls back to the tab name until reported) |
 | `{flags}` | Status suffixes: ` (FULLSCREEN)`, ` (SYNC)`, ` [!]` (empty if none) |
 
 Any other text in the template is kept as-is.
@@ -56,8 +57,11 @@ tab_format "{name}"
 // number only
 tab_format "{index}"
 
-// show the current process instead of the tab name
+// smart: folder name in shells, process name in apps
 tab_format "{process}"
+
+// always show the current folder
+tab_format "{cwd}"
 
 // process name with a number prefix
 tab_format "{index}. {process}"

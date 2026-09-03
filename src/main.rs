@@ -8,6 +8,7 @@ mod tooltip;
 use std::cmp::{max, min};
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryInto;
+use std::path::PathBuf;
 
 use tab::get_tab_to_focus;
 use zellij_tile::prelude::*;
@@ -41,6 +42,7 @@ struct State {
     active_tab_idx: usize,
     pane_manifest: PaneManifest,
     process_names: HashMap<usize, String>,
+    cwd_names: HashMap<usize, String>,
 
     // Display state
     mode_info: ModeInfo,
@@ -123,6 +125,7 @@ impl ZellijPlugin for State {
             Event::CommandChanged(pane_id, command, _, _) => {
                 self.handle_command_changed(pane_id, command)
             },
+            Event::CwdChanged(pane_id, cwd, _) => self.handle_cwd_changed(pane_id, cwd),
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 set_selectable(false);
                 self.resubscribe_events();
@@ -156,6 +159,7 @@ impl ZellijPlugin for State {
         if self.is_tooltip {
             self.render_tooltip(rows, cols);
         } else {
+            self.resolve_missing_process_data();
             self.render_tab_line(cols);
         }
     }
@@ -207,8 +211,13 @@ impl State {
                 EventType::PermissionRequestResult,
                 EventType::InitialKeybinds,
             ];
-            if self.tab_format.contains("{process}") {
+            let needs_process = self.tab_format.contains("{process}");
+            let needs_cwd = self.tab_format.contains("{cwd}");
+            if needs_process {
                 events.push(EventType::CommandChanged);
+            }
+            if needs_process || needs_cwd {
+                events.push(EventType::CwdChanged);
             }
             subscribe(&events);
         }
@@ -225,8 +234,13 @@ impl State {
             EventType::SystemClipboardFailure,
             EventType::InitialKeybinds,
         ];
-        if self.tab_format.contains("{process}") {
+        let needs_process = self.tab_format.contains("{process}");
+        let needs_cwd = self.tab_format.contains("{cwd}");
+        if needs_process {
             events.push(EventType::CommandChanged);
+        }
+        if needs_process || needs_cwd {
+            events.push(EventType::CwdChanged);
         }
         subscribe(&events);
     }
@@ -604,6 +618,7 @@ impl State {
         for tab in &self.tabs {
             let tab_name = self.get_tab_display_name(tab);
             let process_name = self.get_process_name_for_tab(tab);
+            let cwd_name = self.get_cwd_name_for_tab(tab);
 
             if tab.active {
                 active_tab_index = tab.position;
@@ -622,6 +637,7 @@ impl State {
                 dimmed,
                 &self.tab_format,
                 &process_name,
+                &cwd_name,
             );
 
             is_alternate_tab = !is_alternate_tab;
@@ -645,10 +661,78 @@ impl State {
     }
 
     fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
-        self.process_names
+        let process = self.process_names.get(&tab.position);
+        let cwd = self.cwd_names.get(&tab.position);
+        match (process, cwd) {
+            (Some(process), Some(cwd)) if is_shell(process) => cwd.clone(),
+            (Some(process), _) => process.clone(),
+            _ => tab.name.clone(),
+        }
+    }
+
+    fn resolve_missing_process_data(&mut self) {
+        let needs_process = self.tab_format.contains("{process}");
+        let needs_cwd = self.tab_format.contains("{cwd}");
+        if !needs_process && !needs_cwd {
+            return;
+        }
+        for tab in &self.tabs {
+            let position = tab.position;
+            let has_process = !needs_process || self.process_names.contains_key(&position);
+            let has_cwd = !needs_cwd || self.cwd_names.contains_key(&position);
+            if has_process && has_cwd {
+                continue;
+            }
+            let Some(pane_id) = self.active_terminal_pane_id_for_tab(position) else {
+                continue;
+            };
+            if !has_process {
+                if let Ok(command) = get_pane_running_command(pane_id) {
+                    if let Some(process_name) = command.first().map(|c| process_name_from_command(c)) {
+                        self.process_names.insert(position, process_name);
+                    }
+                }
+            }
+            if !has_cwd {
+                if let Ok(cwd) = get_pane_cwd(pane_id) {
+                    let folder_name = folder_name_from_cwd(&cwd);
+                    self.cwd_names.insert(position, folder_name);
+                }
+            }
+        }
+    }
+
+    fn active_terminal_pane_id_for_tab(&self, tab_position: usize) -> Option<PaneId> {
+        let panes = self.pane_manifest.panes.get(&tab_position)?;
+        let pane = panes
+            .iter()
+            .find(|p| !p.is_plugin && !p.is_suppressed && p.is_focused)
+            .or_else(|| panes.iter().find(|p| !p.is_plugin && !p.is_suppressed))?;
+        Some(PaneId::Terminal(pane.id))
+    }
+
+    fn get_cwd_name_for_tab(&self, tab: &TabInfo) -> String {
+        self.cwd_names
             .get(&tab.position)
             .cloned()
             .unwrap_or_else(|| tab.name.clone())
+    }
+
+    fn handle_cwd_changed(&mut self, pane_id: PaneId, cwd: PathBuf) -> bool {
+        let folder_name = folder_name_from_cwd(&cwd);
+        let Some(tab_position) = self.find_tab_position_for_pane(pane_id) else {
+            return false;
+        };
+        if self
+            .cwd_names
+            .get(&tab_position)
+            .map_or(true, |n| n != &folder_name)
+        {
+            self.cwd_names.insert(tab_position, folder_name);
+            true
+        } else {
+            false
+        }
     }
 
     fn handle_command_changed(&mut self, pane_id: PaneId, command: Vec<String>) -> bool {
@@ -705,4 +789,32 @@ fn process_name_from_command(command: &str) -> String {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| command.to_string());
     name.strip_prefix('-').unwrap_or(&name).to_string()
+}
+
+fn is_shell(process_name: &str) -> bool {
+    matches!(
+        process_name,
+        "bash"
+            | "zsh"
+            | "fish"
+            | "sh"
+            | "dash"
+            | "ksh"
+            | "mksh"
+            | "ash"
+            | "csh"
+            | "tcsh"
+            | "nu"
+            | "elvish"
+            | "xonsh"
+            | "pwsh"
+            | "powershell"
+    )
+}
+
+fn folder_name_from_cwd(cwd: &std::path::Path) -> String {
+    cwd.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cwd.to_string_lossy().to_string())
 }

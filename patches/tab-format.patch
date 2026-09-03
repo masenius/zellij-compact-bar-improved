@@ -1,15 +1,17 @@
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -6,7 +6,7 @@ mod tab;
+@@ -6,8 +6,9 @@ mod tab;
  mod tooltip;
  
  use std::cmp::{max, min};
 -use std::collections::BTreeMap;
 +use std::collections::{BTreeMap, HashMap};
  use std::convert::TryInto;
++use std::path::PathBuf;
  
  use tab::get_tab_to_focus;
-@@ -21,6 +21,8 @@ static ARROW_SEPARATOR: &str = "";
+ use zellij_tile::prelude::*;
+@@ -21,6 +22,8 @@ static ARROW_SEPARATOR: &str = "";
  
  const CONFIG_IS_TOOLTIP: &str = "is_tooltip";
  const CONFIG_TOGGLE_TOOLTIP_KEY: &str = "tooltip";
@@ -18,16 +20,17 @@
  const MSG_TOGGLE_TOOLTIP: &str = "toggle_tooltip";
  const MSG_TOGGLE_PERSISTED_TOOLTIP: &str = "toggle_persisted_tooltip";
  const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
-@@ -37,6 +39,8 @@ struct State {
+@@ -37,6 +40,9 @@ struct State {
      // Tab state
      tabs: Vec<TabInfo>,
      active_tab_idx: usize,
 +    pane_manifest: PaneManifest,
 +    process_names: HashMap<usize, String>,
++    cwd_names: HashMap<usize, String>,
  
      // Display state
      mode_info: ModeInfo,
-@@ -53,6 +57,7 @@ struct State {
+@@ -53,6 +59,7 @@ struct State {
      config: BTreeMap<String, String>,
      own_plugin_id: Option<u32>,
      toggle_tooltip_key: Option<String>,
@@ -35,13 +38,14 @@
  
      // Tooltip state
      is_tooltip: bool,
-@@ -115,6 +120,18 @@ impl ZellijPlugin for State {
+@@ -115,6 +122,19 @@ impl ZellijPlugin for State {
              },
              Event::SystemClipboardFailure => self.handle_clipboard_failure(),
              Event::InputReceived => self.handle_input_received(),
 +            Event::CommandChanged(pane_id, command, _, _) => {
 +                self.handle_command_changed(pane_id, command)
 +            },
++            Event::CwdChanged(pane_id, cwd, _) => self.handle_cwd_changed(pane_id, cwd),
 +            Event::PermissionRequestResult(PermissionStatus::Granted) => {
 +                set_selectable(false);
 +                self.resubscribe_events();
@@ -54,7 +58,15 @@
              _ => false,
          }
      }
-@@ -148,6 +165,10 @@ impl State {
+@@ -139,6 +159,7 @@ impl ZellijPlugin for State {
+         if self.is_tooltip {
+             self.render_tooltip(rows, cols);
+         } else {
++            self.resolve_missing_process_data();
+             self.render_tab_line(cols);
+         }
+     }
+@@ -148,6 +169,10 @@ impl State {
      fn initialize_configuration(&mut self, configuration: BTreeMap<String, String>) {
          self.config = configuration.clone();
          self.is_tooltip = self.parse_bool_config(CONFIG_IS_TOOLTIP, false);
@@ -65,7 +77,7 @@
  
          if !self.is_tooltip {
              if let Some(tooltip_toggle_key) = configuration.get(CONFIG_TOGGLE_TOOLTIP_KEY) {
-@@ -161,16 +182,21 @@ impl State {
+@@ -161,16 +186,21 @@ impl State {
      }
  
      fn setup_subscriptions(&self) {
@@ -92,7 +104,7 @@
                  EventType::TabUpdate,
                  EventType::PaneUpdate,
                  EventType::ModeUpdate,
-@@ -178,10 +204,30 @@ impl State {
+@@ -178,10 +208,40 @@ impl State {
                  EventType::CopyToClipboard,
                  EventType::InputReceived,
                  EventType::SystemClipboardFailure,
@@ -101,8 +113,13 @@
 -            ]
 -        };
 +            ];
-+            if self.tab_format.contains("{process}") {
++            let needs_process = self.tab_format.contains("{process}");
++            let needs_cwd = self.tab_format.contains("{cwd}");
++            if needs_process {
 +                events.push(EventType::CommandChanged);
++            }
++            if needs_process || needs_cwd {
++                events.push(EventType::CwdChanged);
 +            }
 +            subscribe(&events);
 +        }
@@ -119,13 +136,18 @@
 +            EventType::SystemClipboardFailure,
 +            EventType::InitialKeybinds,
 +        ];
-+        if self.tab_format.contains("{process}") {
++        let needs_process = self.tab_format.contains("{process}");
++        let needs_cwd = self.tab_format.contains("{cwd}");
++        if needs_process {
 +            events.push(EventType::CommandChanged);
++        }
++        if needs_process || needs_cwd {
++            events.push(EventType::CwdChanged);
 +        }
          subscribe(&events);
      }
  
-@@ -263,13 +309,16 @@ impl State {
+@@ -263,13 +323,16 @@ impl State {
      }
  
      fn handle_pane_update(&mut self, pane_manifest: PaneManifest) -> bool {
@@ -146,33 +168,103 @@
          }
      }
  
-@@ -554,6 +603,7 @@ impl State {
+@@ -554,6 +617,8 @@ impl State {
  
          for tab in &self.tabs {
              let tab_name = self.get_tab_display_name(tab);
 +            let process_name = self.get_process_name_for_tab(tab);
++            let cwd_name = self.get_cwd_name_for_tab(tab);
  
              if tab.active {
                  active_tab_index = tab.position;
-@@ -570,6 +620,8 @@ impl State {
+@@ -570,6 +635,9 @@ impl State {
                  self.mode_info.style.colors,
                  self.mode_info.capabilities,
                  dimmed,
 +                &self.tab_format,
 +                &process_name,
++                &cwd_name,
              );
  
              is_alternate_tab = !is_alternate_tab;
-@@ -591,6 +643,41 @@ impl State {
+@@ -591,6 +659,109 @@ impl State {
          }
          tab_name
      }
 +
 +    fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
-+        self.process_names
++        let process = self.process_names.get(&tab.position);
++        let cwd = self.cwd_names.get(&tab.position);
++        match (process, cwd) {
++            (Some(process), Some(cwd)) if is_shell(process) => cwd.clone(),
++            (Some(process), _) => process.clone(),
++            _ => tab.name.clone(),
++        }
++    }
++
++    fn resolve_missing_process_data(&mut self) {
++        let needs_process = self.tab_format.contains("{process}");
++        let needs_cwd = self.tab_format.contains("{cwd}");
++        if !needs_process && !needs_cwd {
++            return;
++        }
++        for tab in &self.tabs {
++            let position = tab.position;
++            let has_process = !needs_process || self.process_names.contains_key(&position);
++            let has_cwd = !needs_cwd || self.cwd_names.contains_key(&position);
++            if has_process && has_cwd {
++                continue;
++            }
++            let Some(pane_id) = self.active_terminal_pane_id_for_tab(position) else {
++                continue;
++            };
++            if !has_process {
++                if let Ok(command) = get_pane_running_command(pane_id) {
++                    if let Some(process_name) = command.first().map(|c| process_name_from_command(c)) {
++                        self.process_names.insert(position, process_name);
++                    }
++                }
++            }
++            if !has_cwd {
++                if let Ok(cwd) = get_pane_cwd(pane_id) {
++                    let folder_name = folder_name_from_cwd(&cwd);
++                    self.cwd_names.insert(position, folder_name);
++                }
++            }
++        }
++    }
++
++    fn active_terminal_pane_id_for_tab(&self, tab_position: usize) -> Option<PaneId> {
++        let panes = self.pane_manifest.panes.get(&tab_position)?;
++        let pane = panes
++            .iter()
++            .find(|p| !p.is_plugin && !p.is_suppressed && p.is_focused)
++            .or_else(|| panes.iter().find(|p| !p.is_plugin && !p.is_suppressed))?;
++        Some(PaneId::Terminal(pane.id))
++    }
++
++    fn get_cwd_name_for_tab(&self, tab: &TabInfo) -> String {
++        self.cwd_names
 +            .get(&tab.position)
 +            .cloned()
 +            .unwrap_or_else(|| tab.name.clone())
++    }
++
++    fn handle_cwd_changed(&mut self, pane_id: PaneId, cwd: PathBuf) -> bool {
++        let folder_name = folder_name_from_cwd(&cwd);
++        let Some(tab_position) = self.find_tab_position_for_pane(pane_id) else {
++            return false;
++        };
++        if self
++            .cwd_names
++            .get(&tab_position)
++            .map_or(true, |n| n != &folder_name)
++        {
++            self.cwd_names.insert(tab_position, folder_name);
++            true
++        } else {
++            false
++        }
 +    }
 +
 +    fn handle_command_changed(&mut self, pane_id: PaneId, command: Vec<String>) -> bool {
@@ -205,7 +297,7 @@
  }
  
  fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
-@@ -611,3 +698,11 @@ fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
+@@ -611,3 +782,39 @@ fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
          toggle_key, toggle_key, client_id
      )
  }
@@ -217,9 +309,37 @@
 +        .unwrap_or_else(|| command.to_string());
 +    name.strip_prefix('-').unwrap_or(&name).to_string()
 +}
++
++fn is_shell(process_name: &str) -> bool {
++    matches!(
++        process_name,
++        "bash"
++            | "zsh"
++            | "fish"
++            | "sh"
++            | "dash"
++            | "ksh"
++            | "mksh"
++            | "ash"
++            | "csh"
++            | "tcsh"
++            | "nu"
++            | "elvish"
++            | "xonsh"
++            | "pwsh"
++            | "powershell"
++    )
++}
++
++fn folder_name_from_cwd(cwd: &std::path::Path) -> String {
++    cwd.file_name()
++        .map(|s| s.to_string_lossy().to_string())
++        .filter(|s| !s.is_empty())
++        .unwrap_or_else(|| cwd.to_string_lossy().to_string())
++}
 --- a/src/tab.rs
 +++ b/src/tab.rs
-@@ -98,29 +98,38 @@ pub fn render_tab(
+@@ -98,29 +98,40 @@ pub fn render_tab(
  }
  
  pub fn tab_style(
@@ -232,6 +352,7 @@
      dimmed: bool,
 +    format: &str,
 +    process_name: &str,
++    cwd_name: &str,
  ) -> LinePart {
      let separator = tab_separator(capabilities);
  
@@ -257,7 +378,8 @@
 +        .replace("{index}", &(tab.position + 1).to_string())
 +        .replace("{name}", &tabname)
 +        .replace("{flags}", &flags)
-+        .replace("{process}", process_name);
++        .replace("{process}", process_name)
++        .replace("{cwd}", cwd_name);
 +
 +    render_tab(display_text, tab, is_alternate_tab, palette, separator, dimmed)
  }
