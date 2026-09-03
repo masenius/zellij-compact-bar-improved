@@ -1,6 +1,6 @@
---- a/src/main.rs	2026-09-03 15:33:35.468227151 +0200
-+++ b/src/main.rs	2026-09-03 15:33:35.469561411 +0200
-@@ -21,6 +21,8 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -21,6 +21,8 @@ static ARROW_SEPARATOR: &str = "";
  
  const CONFIG_IS_TOOLTIP: &str = "is_tooltip";
  const CONFIG_TOGGLE_TOOLTIP_KEY: &str = "tooltip";
@@ -9,7 +9,15 @@
  const MSG_TOGGLE_TOOLTIP: &str = "toggle_tooltip";
  const MSG_TOGGLE_PERSISTED_TOOLTIP: &str = "toggle_persisted_tooltip";
  const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
-@@ -53,6 +55,7 @@
+@@ -37,6 +39,7 @@ struct State {
+     // Tab state
+     tabs: Vec<TabInfo>,
+     active_tab_idx: usize,
++    pane_manifest: PaneManifest,
+ 
+     // Display state
+     mode_info: ModeInfo,
+@@ -53,6 +56,7 @@ struct State {
      config: BTreeMap<String, String>,
      own_plugin_id: Option<u32>,
      toggle_tooltip_key: Option<String>,
@@ -17,7 +25,23 @@
  
      // Tooltip state
      is_tooltip: bool,
-@@ -148,6 +151,10 @@
+@@ -115,6 +119,15 @@ impl ZellijPlugin for State {
+             },
+             Event::SystemClipboardFailure => self.handle_clipboard_failure(),
+             Event::InputReceived => self.handle_input_received(),
++            Event::PermissionRequestResult(PermissionStatus::Granted) => {
++                set_selectable(false);
++                self.resubscribe_events();
++                true
++            },
++            Event::PermissionRequestResult(PermissionStatus::Denied) => {
++                eprintln!("Permission denied - compact bar will not function properly");
++                false
++            },
+             _ => false,
+         }
+     }
+@@ -148,6 +161,10 @@ impl State {
      fn initialize_configuration(&mut self, configuration: BTreeMap<String, String>) {
          self.config = configuration.clone();
          self.is_tooltip = self.parse_bool_config(CONFIG_IS_TOOLTIP, false);
@@ -28,17 +52,127 @@
  
          if !self.is_tooltip {
              if let Some(tooltip_toggle_key) = configuration.get(CONFIG_TOGGLE_TOOLTIP_KEY) {
-@@ -570,6 +577,7 @@
+@@ -161,16 +178,21 @@ impl State {
+     }
+ 
+     fn setup_subscriptions(&self) {
+-        set_selectable(false);
++        if self.is_tooltip {
++            set_selectable(false);
+ 
+-        let events = if self.is_tooltip {
+-            vec![
++            subscribe(&[
+                 EventType::ModeUpdate,
+                 EventType::TabUpdate,
+                 EventType::InitialKeybinds,
+-            ]
++            ]);
+         } else {
+-            vec![
++            request_permission(&[
++                PermissionType::ReadApplicationState,
++                PermissionType::ChangeApplicationState,
++            ]);
++
++            subscribe(&[
+                 EventType::TabUpdate,
+                 EventType::PaneUpdate,
+                 EventType::ModeUpdate,
+@@ -178,11 +200,23 @@ impl State {
+                 EventType::CopyToClipboard,
+                 EventType::InputReceived,
+                 EventType::SystemClipboardFailure,
++                EventType::PermissionRequestResult,
+                 EventType::InitialKeybinds,
+-            ]
+-        };
++            ]);
++        }
++    }
+ 
+-        subscribe(&events);
++    fn resubscribe_events(&self) {
++        subscribe(&[
++            EventType::TabUpdate,
++            EventType::PaneUpdate,
++            EventType::ModeUpdate,
++            EventType::Mouse,
++            EventType::CopyToClipboard,
++            EventType::InputReceived,
++            EventType::SystemClipboardFailure,
++            EventType::InitialKeybinds,
++        ]);
+     }
+ 
+     fn configure_keybinds(&self) {
+@@ -263,13 +297,16 @@ impl State {
+     }
+ 
+     fn handle_pane_update(&mut self, pane_manifest: PaneManifest) -> bool {
++        let manifest_changed = self.pane_manifest != pane_manifest;
++        self.pane_manifest = pane_manifest;
++
+         if self.toggle_tooltip_key.is_some() {
+             let previous_tooltip_state = self.tooltip_is_active;
+-            self.tooltip_is_active = self.detect_tooltip_presence(&pane_manifest);
+-            self.own_tab_index = self.find_own_tab_index(&pane_manifest);
+-            previous_tooltip_state != self.tooltip_is_active
++            self.tooltip_is_active = self.detect_tooltip_presence(&self.pane_manifest);
++            self.own_tab_index = self.find_own_tab_index(&self.pane_manifest);
++            manifest_changed || previous_tooltip_state != self.tooltip_is_active
+         } else {
+-            false
++            manifest_changed
+         }
+     }
+ 
+@@ -554,6 +591,7 @@ impl State {
+ 
+         for tab in &self.tabs {
+             let tab_name = self.get_tab_display_name(tab);
++            let process_name = self.get_process_name_for_tab(tab);
+ 
+             if tab.active {
+                 active_tab_index = tab.position;
+@@ -570,6 +608,8 @@ impl State {
                  self.mode_info.style.colors,
                  self.mode_info.capabilities,
                  dimmed,
 +                &self.tab_format,
++                &process_name,
              );
  
              is_alternate_tab = !is_alternate_tab;
---- a/src/tab.rs	2026-09-03 15:33:35.468247695 +0200
-+++ b/src/tab.rs	2026-09-03 15:33:35.469589373 +0200
-@@ -98,29 +98,36 @@
+@@ -591,6 +631,25 @@ impl State {
+         }
+         tab_name
+     }
++
++    fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
++        let Some(panes) = self.pane_manifest.panes.get(&tab.position) else {
++            return tab.name.clone();
++        };
++        if let Some(pane) = panes
++            .iter()
++            .find(|p| p.is_focused && !p.is_floating && !p.is_suppressed && !p.is_plugin)
++        {
++            return pane.title.clone();
++        }
++        if let Some(pane) = panes
++            .iter()
++            .find(|p| p.is_focused && !p.is_suppressed && !p.is_plugin)
++        {
++            return pane.title.clone();
++        }
++        tab.name.clone()
++    }
+ }
+ 
+ fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
+--- a/src/tab.rs
++++ b/src/tab.rs
+@@ -98,29 +98,38 @@ pub fn render_tab(
  }
  
  pub fn tab_style(
@@ -50,6 +184,7 @@
      capabilities: PluginCapabilities,
      dimmed: bool,
 +    format: &str,
++    process_name: &str,
  ) -> LinePart {
      let separator = tab_separator(capabilities);
  
@@ -74,7 +209,8 @@
 +    let display_text = format
 +        .replace("{index}", &(tab.position + 1).to_string())
 +        .replace("{name}", &tabname)
-+        .replace("{flags}", &flags);
++        .replace("{flags}", &flags)
++        .replace("{process}", process_name);
 +
 +    render_tab(display_text, tab, is_alternate_tab, palette, separator, dimmed)
  }

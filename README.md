@@ -39,6 +39,7 @@ remembered afterwards.
 |-------------|-------------|
 | `{index}` | 1-based tab position (matches `GoToTab N`) |
 | `{name}` | Tab name |
+| `{process}` | Name of the current process in the tab's active pane (falls back to `{name}` when unavailable) |
 | `{flags}` | Status suffixes: ` (FULLSCREEN)`, ` (SYNC)`, ` [!]` (empty if none) |
 
 Any other text in the template is kept as-is.
@@ -54,6 +55,12 @@ tab_format "{name}"
 
 // number only
 tab_format "{index}"
+
+// show the current process instead of the tab name
+tab_format "{process}"
+
+// process name with a number prefix
+tab_format "{index}. {process}"
 
 // show fullscreen/sync/bell flags
 tab_format "{index}. {name}{flags}"
