@@ -118,6 +118,15 @@ impl ZellijPlugin for State {
             },
             Event::SystemClipboardFailure => self.handle_clipboard_failure(),
             Event::InputReceived => self.handle_input_received(),
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                set_selectable(false);
+                self.resubscribe_events();
+                true
+            },
+            Event::PermissionRequestResult(PermissionStatus::Denied) => {
+                eprintln!("Permission denied - compact bar will not function properly");
+                false
+            },
             _ => false,
         }
     }
@@ -168,16 +177,21 @@ impl State {
     }
 
     fn setup_subscriptions(&self) {
-        set_selectable(false);
+        if self.is_tooltip {
+            set_selectable(false);
 
-        let events = if self.is_tooltip {
-            vec![
+            subscribe(&[
                 EventType::ModeUpdate,
                 EventType::TabUpdate,
                 EventType::InitialKeybinds,
-            ]
+            ]);
         } else {
-            vec![
+            request_permission(&[
+                PermissionType::ReadApplicationState,
+                PermissionType::ChangeApplicationState,
+            ]);
+
+            subscribe(&[
                 EventType::TabUpdate,
                 EventType::PaneUpdate,
                 EventType::ModeUpdate,
@@ -185,11 +199,23 @@ impl State {
                 EventType::CopyToClipboard,
                 EventType::InputReceived,
                 EventType::SystemClipboardFailure,
+                EventType::PermissionRequestResult,
                 EventType::InitialKeybinds,
-            ]
-        };
+            ]);
+        }
+    }
 
-        subscribe(&events);
+    fn resubscribe_events(&self) {
+        subscribe(&[
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
+            EventType::ModeUpdate,
+            EventType::Mouse,
+            EventType::CopyToClipboard,
+            EventType::InputReceived,
+            EventType::SystemClipboardFailure,
+            EventType::InitialKeybinds,
+        ]);
     }
 
     fn configure_keybinds(&self) {
