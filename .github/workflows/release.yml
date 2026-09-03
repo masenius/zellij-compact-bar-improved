@@ -3,9 +3,6 @@ name: Build and Release
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*.*.*'
-      - 'v*.*.*-*'
   workflow_dispatch:
 
 env:
@@ -37,11 +34,24 @@ jobs:
   release:
     name: Create Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required for GitVersion to calculate version based on history
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4
+        with:
+          versionSpec: "6.x"
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4
+
       - name: Download compact-bar artifact
         uses: actions/download-artifact@v4
         with:
@@ -53,6 +63,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.gitversion.outputs.majorMinorPatch }}
+          name: Release ${{ steps.gitversion.outputs.majorMinorPatch }}
           files: |
             compact-bar.wasm
             compact-bar.wasm.sha256sum

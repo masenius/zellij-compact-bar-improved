@@ -93,7 +93,9 @@ cargo build --release --target wasm32-wasip1
 # target/wasm32-wasip1/release/compact-bar.wasm
 ```
 
-Releases are built and published automatically by GitHub Actions on `v*` tags.
+Releases are built and published automatically by GitHub Actions on every push
+to `main`. The version is computed by GitVersion from commit messages:
+`feat`/`breaking` bump the minor/major version, `fix`/`sync` bump the patch.
 
 ## Updating from upstream
 
