@@ -39,7 +39,7 @@ remembered afterwards.
 |-------------|-------------|
 | `{index}` | 1-based tab position (matches `GoToTab N`) |
 | `{name}` | Tab name |
-| `{process}` | Name of the current process in the tab's active pane (falls back to `{name}` when unavailable) |
+| `{process}` | Name of the current foreground process in the tab's active pane (e.g. `nvim`, `zsh`; falls back to the tab name until the process is reported) |
 | `{flags}` | Status suffixes: ` (FULLSCREEN)`, ` (SYNC)`, ` [!]` (empty if none) |
 
 Any other text in the template is kept as-is.
