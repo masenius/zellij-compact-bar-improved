@@ -1,0 +1,59 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build WASM Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Build plugin
+        run: cargo build --release --target wasm32-wasip1
+
+      - name: Upload compact-bar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compact-bar.wasm
+          path: target/wasm32-wasip1/release/compact-bar.wasm
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download compact-bar artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compact-bar.wasm
+
+      - name: Create checksum
+        run: sha256sum compact-bar.wasm > compact-bar.wasm.sha256sum
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            compact-bar.wasm
+            compact-bar.wasm.sha256sum
+          generate_release_notes: true

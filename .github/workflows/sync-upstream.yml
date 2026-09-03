@@ -1,0 +1,57 @@
+name: Sync upstream compact-bar
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    name: Sync compact-bar from zellij-org/zellij
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream source
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/zellij-org/zellij.git /tmp/zellij
+          cd /tmp/zellij
+          git sparse-checkout set default-plugins/compact-bar
+
+      - name: Copy upstream source
+        run: |
+          rm -rf src
+          cp -r /tmp/zellij/default-plugins/compact-bar/src .
+          cp -r /tmp/zellij/default-plugins/compact-bar/.cargo .
+          cp -L /tmp/zellij/default-plugins/compact-bar/LICENSE.md LICENSE.md
+
+      - name: Apply tab-format patch
+        run: |
+          git apply --check patches/tab-format.patch
+          git apply patches/tab-format.patch
+
+      - name: Build check
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build --release --target wasm32-wasip1
+
+      - name: Create branch and PR
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b sync/upstream
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No upstream changes to sync."
+            exit 0
+          fi
+          git commit -m "sync: pull compact-bar from zellij-org/zellij main"
+          git push origin sync/upstream
+          gh pr create \
+            --base main \
+            --head sync/upstream \
+            --title "Sync compact-bar from upstream" \
+            --body "Automated sync of \`zellij-org/zellij\` \`default-plugins/compact-bar\` with the \`tab_format\` patch re-applied." \
+            || true
