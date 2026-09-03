@@ -15,7 +15,7 @@ use zellij_tile::prelude::*;
 
 use crate::clipboard_utils::{system_clipboard_error, text_copied_hint};
 use crate::line::tab_line;
-use crate::tab::tab_style;
+use crate::tab::{render_pane_name, tab_style};
 use crate::tooltip::TooltipRenderer;
 
 static ARROW_SEPARATOR: &str = "";
@@ -24,6 +24,7 @@ const CONFIG_IS_TOOLTIP: &str = "is_tooltip";
 const CONFIG_TOGGLE_TOOLTIP_KEY: &str = "tooltip";
 const CONFIG_TAB_FORMAT: &str = "tab_format";
 const DEFAULT_TAB_FORMAT: &str = "{index}. {name}";
+const CONFIG_PANE_FORMAT: &str = "pane_format";
 const MSG_TOGGLE_TOOLTIP: &str = "toggle_tooltip";
 const MSG_TOGGLE_PERSISTED_TOOLTIP: &str = "toggle_persisted_tooltip";
 const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
@@ -43,6 +44,11 @@ struct State {
     pane_manifest: PaneManifest,
     process_names: HashMap<usize, String>,
     cwd_names: HashMap<usize, String>,
+    git_repo_status: HashMap<usize, bool>,
+    own_initial_cwd: PathBuf,
+    pane_format: String,
+    last_pane_names: HashMap<u32, String>,
+    original_pane_names: HashMap<u32, String>,
 
     // Display state
     mode_info: ModeInfo,
@@ -87,6 +93,7 @@ impl ZellijPlugin for State {
         let plugin_ids = get_plugin_ids();
         self.own_plugin_id = Some(plugin_ids.plugin_id);
         self.own_client_id = plugin_ids.client_id;
+        self.own_initial_cwd = plugin_ids.initial_cwd;
         self.initialize_configuration(configuration);
         self.setup_subscriptions();
         self.configure_keybinds();
@@ -173,6 +180,10 @@ impl State {
             .get(CONFIG_TAB_FORMAT)
             .cloned()
             .unwrap_or_else(|| DEFAULT_TAB_FORMAT.to_string());
+        self.pane_format = configuration
+            .get(CONFIG_PANE_FORMAT)
+            .cloned()
+            .unwrap_or_default();
 
         if !self.is_tooltip {
             if let Some(tooltip_toggle_key) = configuration.get(CONFIG_TOGGLE_TOOLTIP_KEY) {
@@ -211,12 +222,11 @@ impl State {
                 EventType::PermissionRequestResult,
                 EventType::InitialKeybinds,
             ];
-            let needs_process = self.tab_format.contains("{process}");
-            let needs_cwd = self.tab_format.contains("{cwd}");
-            if needs_process {
+            let (needs_process, needs_smart, needs_cwd) = self.placeholder_requirements();
+            if needs_process || needs_smart {
                 events.push(EventType::CommandChanged);
             }
-            if needs_process || needs_cwd {
+            if needs_smart || needs_cwd {
                 events.push(EventType::CwdChanged);
             }
             subscribe(&events);
@@ -234,15 +244,23 @@ impl State {
             EventType::SystemClipboardFailure,
             EventType::InitialKeybinds,
         ];
-        let needs_process = self.tab_format.contains("{process}");
-        let needs_cwd = self.tab_format.contains("{cwd}");
-        if needs_process {
+        let (needs_process, needs_smart, needs_cwd) = self.placeholder_requirements();
+        if needs_process || needs_smart {
             events.push(EventType::CommandChanged);
         }
-        if needs_process || needs_cwd {
+        if needs_smart || needs_cwd {
             events.push(EventType::CwdChanged);
         }
         subscribe(&events);
+    }
+
+    fn placeholder_requirements(&self) -> (bool, bool, bool) {
+        let format_text = format!("{} {}", self.tab_format, self.pane_format);
+        (
+            format_text.contains("{process}"),
+            format_text.contains("{smart}"),
+            format_text.contains("{cwd}"),
+        )
     }
 
     fn configure_keybinds(&self) {
@@ -617,7 +635,8 @@ impl State {
 
         for tab in &self.tabs {
             let tab_name = self.get_tab_display_name(tab);
-            let process_name = self.get_process_name_for_tab(tab);
+            let process_name = self.get_raw_process_name_for_tab(tab);
+            let smart_name = self.get_smart_name_for_tab(tab);
             let cwd_name = self.get_cwd_name_for_tab(tab);
 
             if tab.active {
@@ -628,6 +647,12 @@ impl State {
                 }
             }
 
+            let format = if is_default_name(&tab.name, "Tab #") {
+                &self.tab_format
+            } else {
+                "{name}"
+            };
+
             let styled_tab = tab_style(
                 tab_name,
                 tab,
@@ -635,8 +660,9 @@ impl State {
                 self.mode_info.style.colors,
                 self.mode_info.capabilities,
                 dimmed,
-                &self.tab_format,
+                format,
                 &process_name,
+                &smart_name,
                 &cwd_name,
             );
 
@@ -660,28 +686,40 @@ impl State {
         tab_name
     }
 
-    fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
+    fn get_smart_name_for_tab(&self, tab: &TabInfo) -> String {
         let process = self.process_names.get(&tab.position);
         let cwd = self.cwd_names.get(&tab.position);
         match (process, cwd) {
+            // in a git repo, always show the folder (even while running a process)
+            (_, Some(cwd)) if self.git_repo_status.get(&tab.position) == Some(&true) => cwd.clone(),
+            // in a shell, show the folder
             (Some(process), Some(cwd)) if is_shell(process) => cwd.clone(),
+            // otherwise show the process name
             (Some(process), _) => process.clone(),
             _ => tab.name.clone(),
         }
     }
 
+    fn get_raw_process_name_for_tab(&self, tab: &TabInfo) -> String {
+        self.process_names
+            .get(&tab.position)
+            .cloned()
+            .unwrap_or_else(|| tab.name.clone())
+    }
+
     fn resolve_missing_process_data(&mut self) {
-        let needs_process = self.tab_format.contains("{process}");
-        let needs_cwd = self.tab_format.contains("{cwd}");
-        let cwd_is_needed = needs_process || needs_cwd;
-        if !needs_process && !needs_cwd {
+        let (needs_process, needs_smart, needs_cwd) = self.placeholder_requirements();
+        let needs_command = needs_process || needs_smart;
+        let cwd_is_needed = needs_smart || needs_cwd;
+        if !needs_command && !cwd_is_needed && self.pane_format.is_empty() {
             return;
         }
         for tab in &self.tabs {
             let position = tab.position;
-            let has_process = !needs_process || self.process_names.contains_key(&position);
+            let has_process = !needs_command || self.process_names.contains_key(&position);
             let has_cwd = !cwd_is_needed || self.cwd_names.contains_key(&position);
-            if has_process && has_cwd {
+            let has_git_status = !needs_smart || self.git_repo_status.contains_key(&position);
+            if has_process && has_cwd && has_git_status {
                 continue;
             }
             let Some(pane_id) = self.active_terminal_pane_id_for_tab(position) else {
@@ -694,13 +732,102 @@ impl State {
                     }
                 }
             }
-            if !has_cwd {
+            if !has_cwd || !has_git_status {
                 if let Ok(cwd) = get_pane_cwd(pane_id) {
-                    let folder_name = folder_name_from_cwd(&cwd);
-                    self.cwd_names.insert(position, folder_name);
+                    if !has_cwd {
+                        let folder_name = folder_name_from_cwd(&cwd);
+                        self.cwd_names.insert(position, folder_name);
+                    }
+                    if !has_git_status {
+                        let in_git = self.is_in_git_repo(&cwd);
+                        self.git_repo_status.insert(position, in_git);
+                    }
                 }
             }
         }
+        if !self.pane_format.is_empty() {
+            self.apply_pane_format();
+        }
+    }
+
+    fn apply_pane_format(&mut self) {
+        if self.pane_format.is_empty() || self.is_tooltip {
+            return;
+        }
+        let tabs = self.tabs.clone();
+        let format = self.pane_format.clone();
+        for tab in &tabs {
+            let position = tab.position;
+            let Some(pane_id) = self.active_terminal_pane_id_for_tab(position) else {
+                continue;
+            };
+            let PaneId::Terminal(terminal_id) = pane_id else {
+                continue;
+            };
+            if self.pane_has_manual_name(terminal_id) {
+                continue;
+            }
+            let name = self.render_pane_name_for_tab(&format, tab, terminal_id);
+            if self.last_pane_names.get(&terminal_id) != Some(&name) {
+                rename_terminal_pane(terminal_id, &name);
+                self.last_pane_names.insert(terminal_id, name);
+            }
+        }
+    }
+
+    fn render_pane_name_for_tab(
+        &mut self,
+        format: &str,
+        tab: &TabInfo,
+        terminal_id: u32,
+    ) -> String {
+        let process = self.get_raw_process_name_for_tab(tab);
+        let smart = self.get_smart_name_for_tab(tab);
+        let cwd = self.get_cwd_name_for_tab(tab);
+        let name = self.original_pane_name(terminal_id);
+        let index = self.pane_index_in_tab(terminal_id);
+        render_pane_name(index, &name, &process, &smart, &cwd, "", format)
+    }
+
+    fn pane_has_manual_name(&self, terminal_id: u32) -> bool {
+        let Some(title) = self.pane_title_for_id(terminal_id) else {
+            return false;
+        };
+        if self.last_pane_names.get(&terminal_id).map(|n| n == &title).unwrap_or(false) {
+            return false;
+        }
+        !is_default_name(&title, "Pane #")
+    }
+
+    fn original_pane_name(&mut self, terminal_id: u32) -> String {
+        if let Some(name) = self.original_pane_names.get(&terminal_id) {
+            return name.clone();
+        }
+        let name = self
+            .pane_title_for_id(terminal_id)
+            .unwrap_or_default();
+        if !name.is_empty() {
+            self.original_pane_names.insert(terminal_id, name.clone());
+        }
+        name
+    }
+
+    fn pane_title_for_id(&self, terminal_id: u32) -> Option<String> {
+        for panes in self.pane_manifest.panes.values() {
+            if let Some(pane) = panes.iter().find(|p| !p.is_plugin && p.id == terminal_id) {
+                return Some(pane.title.clone());
+            }
+        }
+        None
+    }
+
+    fn pane_index_in_tab(&self, terminal_id: u32) -> usize {
+        for panes in self.pane_manifest.panes.values() {
+            if let Some(index) = panes.iter().position(|p| !p.is_plugin && p.id == terminal_id) {
+                return index + 1;
+            }
+        }
+        0
     }
 
     fn active_terminal_pane_id_for_tab(&self, tab_position: usize) -> Option<PaneId> {
@@ -724,16 +851,33 @@ impl State {
         let Some(tab_position) = self.find_tab_position_for_pane(pane_id) else {
             return false;
         };
-        if self
+        let in_git = self.is_in_git_repo(&cwd);
+        let folder_changed = self
             .cwd_names
             .get(&tab_position)
-            .map_or(true, |n| n != &folder_name)
-        {
+            .map_or(true, |n| n != &folder_name);
+        let git_changed = self.git_repo_status.get(&tab_position) != Some(&in_git);
+        if folder_changed || git_changed {
             self.cwd_names.insert(tab_position, folder_name);
-            true
-        } else {
-            false
+            self.git_repo_status.insert(tab_position, in_git);
         }
+        folder_changed || git_changed
+    }
+
+    fn is_in_git_repo(&self, cwd: &std::path::Path) -> bool {
+        let Ok(relative_cwd) = cwd.strip_prefix(&self.own_initial_cwd) else {
+            return false;
+        };
+        let mut dir = std::path::PathBuf::from("/host").join(relative_cwd);
+        loop {
+            if std::fs::metadata(dir.join(".git")).is_ok() {
+                return true;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        false
     }
 
     fn handle_command_changed(&mut self, pane_id: PaneId, command: Vec<String>) -> bool {
@@ -790,6 +934,13 @@ fn process_name_from_command(command: &str) -> String {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| command.to_string());
     name.strip_prefix('-').unwrap_or(&name).to_string()
+}
+
+fn is_default_name(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
 }
 
 fn is_shell(process_name: &str) -> bool {

@@ -32,18 +32,22 @@ remembered afterwards.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tab_format` | string | `"{index}. {name}"` | Template for each tab label |
+| `pane_format` | string | (empty) | Template used to auto-rename each tab's active pane |
 
 ### Placeholders
 
 | Placeholder | Description |
 |-------------|-------------|
-| `{index}` | 1-based tab position (matches `GoToTab N`) |
-| `{name}` | Tab name |
-| `{process}` | Current foreground process in the tab's active pane — in a shell this is the current folder's basename (e.g. `myproject`); otherwise the process name (e.g. `nvim`). Falls back to the tab name until reported |
-| `{cwd}` | Basename of the current working directory of the tab's active pane (e.g. `myproject`; falls back to the tab name until reported) |
-| `{flags}` | Status suffixes: ` (FULLSCREEN)`, ` (SYNC)`, ` [!]` (empty if none) |
+| `{index}` | 1-based tab position (matches `GoToTab N`); for `pane_format`, the pane's 1-based position in the tab |
+| `{name}` | Tab name; for `pane_format`, the pane's original name |
+| `{process}` | The raw foreground process name of the tab's active pane (e.g. `nvim`, `bash`) |
+| `{smart}` | Smart label: in a git repository, or in a shell, shows the current folder's basename (e.g. `myproject`); otherwise the process name |
+| `{cwd}` | Basename of the current working directory of the tab's active pane (e.g. `myproject`) |
+| `{flags}` | Status suffixes: ` (FULLSCREEN)`, ` (SYNC)`, ` [!]` (empty if none; always empty for `pane_format`) |
 
 Any other text in the template is kept as-is.
+
+If a tab has a manually-set name (not the default `Tab #N`) it is shown as-is, overriding `tab_format`. A pane with a manually-set name (not the default `Pane #N`) is not auto-renamed by `pane_format`.
 
 Examples:
 
@@ -57,17 +61,23 @@ tab_format "{name}"
 // number only
 tab_format "{index}"
 
-// smart: folder name in shells, process name in apps
-tab_format "{process}"
+// smart: folder name in git repos and shells, process name elsewhere
+tab_format "{index}. {smart}"
 
 // always show the current folder
-tab_format "{cwd}"
+tab_format "{index}. {cwd}"
 
-// process name with a number prefix
+// raw process name with a number prefix
 tab_format "{index}. {process}"
 
 // show fullscreen/sync/bell flags
 tab_format "{index}. {name}{flags}"
+
+// rename each tab's active pane to its smart label
+pane_format "{smart}"
+
+// rename each tab's active pane to "folder - process"
+pane_format "{cwd} - {process}"
 ```
 
 ## Limitations
