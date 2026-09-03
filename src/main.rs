@@ -673,13 +673,14 @@ impl State {
     fn resolve_missing_process_data(&mut self) {
         let needs_process = self.tab_format.contains("{process}");
         let needs_cwd = self.tab_format.contains("{cwd}");
+        let cwd_is_needed = needs_process || needs_cwd;
         if !needs_process && !needs_cwd {
             return;
         }
         for tab in &self.tabs {
             let position = tab.position;
             let has_process = !needs_process || self.process_names.contains_key(&position);
-            let has_cwd = !needs_cwd || self.cwd_names.contains_key(&position);
+            let has_cwd = !cwd_is_needed || self.cwd_names.contains_key(&position);
             if has_process && has_cwd {
                 continue;
             }
