@@ -1,4 +1,4 @@
-# zellij-compact-bar
+# zellij-compact-bar-improved
 
 A [Zellij](https://zellij.dev/) `compact-bar` plugin fork with a configurable
 tab label format. Based on the official plugin from
@@ -17,7 +17,7 @@ Add the plugin to your `~/.config/zellij/config.kdl`, replacing the stock
 
 ```kdl
 plugins {
-    compact-bar location="https://github.com/masenius/zellij-compact-bar/releases/latest/download/compact-bar.wasm" {
+    compact-bar location="https://github.com/masenius/zellij-compact-bar-improved/releases/latest/download/compact-bar.wasm" {
         tab_format "{index}. {name}"
     }
 }
