@@ -106,6 +106,7 @@ pub fn tab_style(
     dimmed: bool,
     format: &str,
     process_name: &str,
+    cwd_name: &str,
 ) -> LinePart {
     let separator = tab_separator(capabilities);
 
@@ -127,7 +128,8 @@ pub fn tab_style(
         .replace("{index}", &(tab.position + 1).to_string())
         .replace("{name}", &tabname)
         .replace("{flags}", &flags)
-        .replace("{process}", process_name);
+        .replace("{process}", process_name)
+        .replace("{cwd}", cwd_name);
 
     render_tab(display_text, tab, is_alternate_tab, palette, separator, dimmed)
 }
