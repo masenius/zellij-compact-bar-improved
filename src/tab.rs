@@ -106,6 +106,7 @@ pub fn tab_style(
     dimmed: bool,
     format: &str,
     process_name: &str,
+    smart_name: &str,
     cwd_name: &str,
 ) -> LinePart {
     let separator = tab_separator(capabilities);
@@ -129,9 +130,28 @@ pub fn tab_style(
         .replace("{name}", &tabname)
         .replace("{flags}", &flags)
         .replace("{process}", process_name)
+        .replace("{smart}", smart_name)
         .replace("{cwd}", cwd_name);
 
     render_tab(display_text, tab, is_alternate_tab, palette, separator, dimmed)
+}
+
+pub fn render_pane_name(
+    index: usize,
+    name: &str,
+    process: &str,
+    smart: &str,
+    cwd: &str,
+    flags: &str,
+    format: &str,
+) -> String {
+    format
+        .replace("{index}", &index.to_string())
+        .replace("{name}", name)
+        .replace("{flags}", flags)
+        .replace("{process}", process)
+        .replace("{smart}", smart)
+        .replace("{cwd}", cwd)
 }
 
 pub(crate) fn get_tab_to_focus(
