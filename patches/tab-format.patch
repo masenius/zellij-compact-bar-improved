@@ -1,5 +1,14 @@
 --- a/src/main.rs
 +++ b/src/main.rs
+@@ -6,7 +6,7 @@ mod tab;
+ mod tooltip;
+ 
+ use std::cmp::{max, min};
+-use std::collections::BTreeMap;
++use std::collections::{BTreeMap, HashMap};
+ use std::convert::TryInto;
+ 
+ use tab::get_tab_to_focus;
 @@ -21,6 +21,8 @@ static ARROW_SEPARATOR: &str = "";
  
  const CONFIG_IS_TOOLTIP: &str = "is_tooltip";
@@ -9,15 +18,16 @@
  const MSG_TOGGLE_TOOLTIP: &str = "toggle_tooltip";
  const MSG_TOGGLE_PERSISTED_TOOLTIP: &str = "toggle_persisted_tooltip";
  const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
-@@ -37,6 +39,7 @@ struct State {
+@@ -37,6 +39,8 @@ struct State {
      // Tab state
      tabs: Vec<TabInfo>,
      active_tab_idx: usize,
 +    pane_manifest: PaneManifest,
++    process_names: HashMap<usize, String>,
  
      // Display state
      mode_info: ModeInfo,
-@@ -53,6 +56,7 @@ struct State {
+@@ -53,6 +57,7 @@ struct State {
      config: BTreeMap<String, String>,
      own_plugin_id: Option<u32>,
      toggle_tooltip_key: Option<String>,
@@ -25,10 +35,13 @@
  
      // Tooltip state
      is_tooltip: bool,
-@@ -115,6 +119,15 @@ impl ZellijPlugin for State {
+@@ -115,6 +120,18 @@ impl ZellijPlugin for State {
              },
              Event::SystemClipboardFailure => self.handle_clipboard_failure(),
              Event::InputReceived => self.handle_input_received(),
++            Event::CommandChanged(pane_id, command, _, _) => {
++                self.handle_command_changed(pane_id, command)
++            },
 +            Event::PermissionRequestResult(PermissionStatus::Granted) => {
 +                set_selectable(false);
 +                self.resubscribe_events();
@@ -41,7 +54,7 @@
              _ => false,
          }
      }
-@@ -148,6 +161,10 @@ impl State {
+@@ -148,6 +165,10 @@ impl State {
      fn initialize_configuration(&mut self, configuration: BTreeMap<String, String>) {
          self.config = configuration.clone();
          self.is_tooltip = self.parse_bool_config(CONFIG_IS_TOOLTIP, false);
@@ -52,7 +65,7 @@
  
          if !self.is_tooltip {
              if let Some(tooltip_toggle_key) = configuration.get(CONFIG_TOGGLE_TOOLTIP_KEY) {
-@@ -161,16 +178,21 @@ impl State {
+@@ -161,16 +182,21 @@ impl State {
      }
  
      fn setup_subscriptions(&self) {
@@ -75,11 +88,11 @@
 +                PermissionType::ChangeApplicationState,
 +            ]);
 +
-+            subscribe(&[
++            let mut events = vec![
                  EventType::TabUpdate,
                  EventType::PaneUpdate,
                  EventType::ModeUpdate,
-@@ -178,11 +200,23 @@ impl State {
+@@ -178,10 +204,30 @@ impl State {
                  EventType::CopyToClipboard,
                  EventType::InputReceived,
                  EventType::SystemClipboardFailure,
@@ -87,13 +100,16 @@
                  EventType::InitialKeybinds,
 -            ]
 -        };
-+            ]);
++            ];
++            if self.tab_format.contains("{process}") {
++                events.push(EventType::CommandChanged);
++            }
++            subscribe(&events);
 +        }
 +    }
  
--        subscribe(&events);
 +    fn resubscribe_events(&self) {
-+        subscribe(&[
++        let mut events = vec![
 +            EventType::TabUpdate,
 +            EventType::PaneUpdate,
 +            EventType::ModeUpdate,
@@ -102,11 +118,14 @@
 +            EventType::InputReceived,
 +            EventType::SystemClipboardFailure,
 +            EventType::InitialKeybinds,
-+        ]);
++        ];
++        if self.tab_format.contains("{process}") {
++            events.push(EventType::CommandChanged);
++        }
+         subscribe(&events);
      }
  
-     fn configure_keybinds(&self) {
-@@ -263,13 +297,16 @@ impl State {
+@@ -263,13 +309,16 @@ impl State {
      }
  
      fn handle_pane_update(&mut self, pane_manifest: PaneManifest) -> bool {
@@ -127,7 +146,7 @@
          }
      }
  
-@@ -554,6 +591,7 @@ impl State {
+@@ -554,6 +603,7 @@ impl State {
  
          for tab in &self.tabs {
              let tab_name = self.get_tab_display_name(tab);
@@ -135,7 +154,7 @@
  
              if tab.active {
                  active_tab_index = tab.position;
-@@ -570,6 +608,8 @@ impl State {
+@@ -570,6 +620,8 @@ impl State {
                  self.mode_info.style.colors,
                  self.mode_info.capabilities,
                  dimmed,
@@ -144,32 +163,60 @@
              );
  
              is_alternate_tab = !is_alternate_tab;
-@@ -591,6 +631,25 @@ impl State {
+@@ -591,6 +643,41 @@ impl State {
          }
          tab_name
      }
 +
 +    fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
-+        let Some(panes) = self.pane_manifest.panes.get(&tab.position) else {
-+            return tab.name.clone();
++        self.process_names
++            .get(&tab.position)
++            .cloned()
++            .unwrap_or_else(|| tab.name.clone())
++    }
++
++    fn handle_command_changed(&mut self, pane_id: PaneId, command: Vec<String>) -> bool {
++        let Some(process_name) = command.first().map(|c| process_name_from_command(c)) else {
++            return false;
 +        };
-+        if let Some(pane) = panes
-+            .iter()
-+            .find(|p| p.is_focused && !p.is_floating && !p.is_suppressed && !p.is_plugin)
-+        {
-+            return pane.title.clone();
++        let Some(tab_position) = self.find_tab_position_for_pane(pane_id) else {
++            return false;
++        };
++        if self.process_names.get(&tab_position).map_or(true, |n| n != &process_name) {
++            self.process_names.insert(tab_position, process_name);
++            true
++        } else {
++            false
 +        }
-+        if let Some(pane) = panes
-+            .iter()
-+            .find(|p| p.is_focused && !p.is_suppressed && !p.is_plugin)
-+        {
-+            return pane.title.clone();
++    }
++
++    fn find_tab_position_for_pane(&self, pane_id: PaneId) -> Option<usize> {
++        for (tab_position, panes) in &self.pane_manifest.panes {
++            let matching_id = match pane_id {
++                PaneId::Terminal(id) => id,
++                PaneId::Plugin(_) => continue,
++            };
++            if panes.iter().any(|p| !p.is_plugin && p.id == matching_id) {
++                return Some(*tab_position);
++            }
 +        }
-+        tab.name.clone()
++        None
 +    }
  }
  
  fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
+@@ -611,3 +698,11 @@ fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
+         toggle_key, toggle_key, client_id
+     )
+ }
++
++fn process_name_from_command(command: &str) -> String {
++    let name = std::path::Path::new(command)
++        .file_name()
++        .map(|s| s.to_string_lossy().to_string())
++        .unwrap_or_else(|| command.to_string());
++    name.strip_prefix('-').unwrap_or(&name).to_string()
++}
 --- a/src/tab.rs
 +++ b/src/tab.rs
 @@ -98,29 +98,38 @@ pub fn render_tab(

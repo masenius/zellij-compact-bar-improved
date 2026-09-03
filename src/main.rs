@@ -6,7 +6,7 @@ mod tab;
 mod tooltip;
 
 use std::cmp::{max, min};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryInto;
 
 use tab::get_tab_to_focus;
@@ -40,6 +40,7 @@ struct State {
     tabs: Vec<TabInfo>,
     active_tab_idx: usize,
     pane_manifest: PaneManifest,
+    process_names: HashMap<usize, String>,
 
     // Display state
     mode_info: ModeInfo,
@@ -119,6 +120,9 @@ impl ZellijPlugin for State {
             },
             Event::SystemClipboardFailure => self.handle_clipboard_failure(),
             Event::InputReceived => self.handle_input_received(),
+            Event::CommandChanged(pane_id, command, _, _) => {
+                self.handle_command_changed(pane_id, command)
+            },
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 set_selectable(false);
                 self.resubscribe_events();
@@ -192,7 +196,7 @@ impl State {
                 PermissionType::ChangeApplicationState,
             ]);
 
-            subscribe(&[
+            let mut events = vec![
                 EventType::TabUpdate,
                 EventType::PaneUpdate,
                 EventType::ModeUpdate,
@@ -202,12 +206,16 @@ impl State {
                 EventType::SystemClipboardFailure,
                 EventType::PermissionRequestResult,
                 EventType::InitialKeybinds,
-            ]);
+            ];
+            if self.tab_format.contains("{process}") {
+                events.push(EventType::CommandChanged);
+            }
+            subscribe(&events);
         }
     }
 
     fn resubscribe_events(&self) {
-        subscribe(&[
+        let mut events = vec![
             EventType::TabUpdate,
             EventType::PaneUpdate,
             EventType::ModeUpdate,
@@ -216,7 +224,11 @@ impl State {
             EventType::InputReceived,
             EventType::SystemClipboardFailure,
             EventType::InitialKeybinds,
-        ]);
+        ];
+        if self.tab_format.contains("{process}") {
+            events.push(EventType::CommandChanged);
+        }
+        subscribe(&events);
     }
 
     fn configure_keybinds(&self) {
@@ -633,22 +645,38 @@ impl State {
     }
 
     fn get_process_name_for_tab(&self, tab: &TabInfo) -> String {
-        let Some(panes) = self.pane_manifest.panes.get(&tab.position) else {
-            return tab.name.clone();
+        self.process_names
+            .get(&tab.position)
+            .cloned()
+            .unwrap_or_else(|| tab.name.clone())
+    }
+
+    fn handle_command_changed(&mut self, pane_id: PaneId, command: Vec<String>) -> bool {
+        let Some(process_name) = command.first().map(|c| process_name_from_command(c)) else {
+            return false;
         };
-        if let Some(pane) = panes
-            .iter()
-            .find(|p| p.is_focused && !p.is_floating && !p.is_suppressed && !p.is_plugin)
-        {
-            return pane.title.clone();
+        let Some(tab_position) = self.find_tab_position_for_pane(pane_id) else {
+            return false;
+        };
+        if self.process_names.get(&tab_position).map_or(true, |n| n != &process_name) {
+            self.process_names.insert(tab_position, process_name);
+            true
+        } else {
+            false
         }
-        if let Some(pane) = panes
-            .iter()
-            .find(|p| p.is_focused && !p.is_suppressed && !p.is_plugin)
-        {
-            return pane.title.clone();
+    }
+
+    fn find_tab_position_for_pane(&self, pane_id: PaneId) -> Option<usize> {
+        for (tab_position, panes) in &self.pane_manifest.panes {
+            let matching_id = match pane_id {
+                PaneId::Terminal(id) => id,
+                PaneId::Plugin(_) => continue,
+            };
+            if panes.iter().any(|p| !p.is_plugin && p.id == matching_id) {
+                return Some(*tab_position);
+            }
         }
-        tab.name.clone()
+        None
     }
 }
 
@@ -669,4 +697,12 @@ fn bind_toggle_key_config(toggle_key: &str, client_id: u16) -> String {
     "#,
         toggle_key, toggle_key, client_id
     )
+}
+
+fn process_name_from_command(command: &str) -> String {
+    let name = std::path::Path::new(command)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| command.to_string());
+    name.strip_prefix('-').unwrap_or(&name).to_string()
 }
