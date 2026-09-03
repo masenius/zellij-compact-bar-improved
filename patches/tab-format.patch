@@ -1,0 +1,82 @@
+--- a/src/main.rs	2026-09-03 15:33:35.468227151 +0200
++++ b/src/main.rs	2026-09-03 15:33:35.469561411 +0200
+@@ -21,6 +21,8 @@
+ 
+ const CONFIG_IS_TOOLTIP: &str = "is_tooltip";
+ const CONFIG_TOGGLE_TOOLTIP_KEY: &str = "tooltip";
++const CONFIG_TAB_FORMAT: &str = "tab_format";
++const DEFAULT_TAB_FORMAT: &str = "{index}. {name}";
+ const MSG_TOGGLE_TOOLTIP: &str = "toggle_tooltip";
+ const MSG_TOGGLE_PERSISTED_TOOLTIP: &str = "toggle_persisted_tooltip";
+ const MSG_LAUNCH_TOOLTIP: &str = "launch_tooltip_if_not_launched";
+@@ -53,6 +55,7 @@
+     config: BTreeMap<String, String>,
+     own_plugin_id: Option<u32>,
+     toggle_tooltip_key: Option<String>,
++    tab_format: String,
+ 
+     // Tooltip state
+     is_tooltip: bool,
+@@ -148,6 +151,10 @@
+     fn initialize_configuration(&mut self, configuration: BTreeMap<String, String>) {
+         self.config = configuration.clone();
+         self.is_tooltip = self.parse_bool_config(CONFIG_IS_TOOLTIP, false);
++        self.tab_format = configuration
++            .get(CONFIG_TAB_FORMAT)
++            .cloned()
++            .unwrap_or_else(|| DEFAULT_TAB_FORMAT.to_string());
+ 
+         if !self.is_tooltip {
+             if let Some(tooltip_toggle_key) = configuration.get(CONFIG_TOGGLE_TOOLTIP_KEY) {
+@@ -570,6 +577,7 @@
+                 self.mode_info.style.colors,
+                 self.mode_info.capabilities,
+                 dimmed,
++                &self.tab_format,
+             );
+ 
+             is_alternate_tab = !is_alternate_tab;
+--- a/src/tab.rs	2026-09-03 15:33:35.468247695 +0200
++++ b/src/tab.rs	2026-09-03 15:33:35.469589373 +0200
+@@ -98,29 +98,36 @@
+ }
+ 
+ pub fn tab_style(
+-    mut tabname: String,
++    tabname: String,
+     tab: &TabInfo,
+     mut is_alternate_tab: bool,
+     palette: Styling,
+     capabilities: PluginCapabilities,
+     dimmed: bool,
++    format: &str,
+ ) -> LinePart {
+     let separator = tab_separator(capabilities);
+ 
++    let mut flags = String::new();
+     if tab.is_fullscreen_active {
+-        tabname.push_str(" (FULLSCREEN)");
++        flags.push_str(" (FULLSCREEN)");
+     } else if tab.is_sync_panes_active {
+-        tabname.push_str(" (SYNC)");
++        flags.push_str(" (SYNC)");
+     }
+     if tab.has_bell_notification || tab.is_flashing_bell {
+-        tabname.push_str(" [!]");
++        flags.push_str(" [!]");
+     }
+     // we only color alternate tabs differently if we can't use the arrow fonts to separate them
+     if !capabilities.arrow_fonts {
+         is_alternate_tab = false;
+     }
+ 
+-    render_tab(tabname, tab, is_alternate_tab, palette, separator, dimmed)
++    let display_text = format
++        .replace("{index}", &(tab.position + 1).to_string())
++        .replace("{name}", &tabname)
++        .replace("{flags}", &flags);
++
++    render_tab(display_text, tab, is_alternate_tab, palette, separator, dimmed)
+ }
+ 
+ pub(crate) fn get_tab_to_focus(

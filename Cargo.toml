@@ -1,0 +1,14 @@
+[package]
+name = "compact-bar"
+version = "0.1.0"
+authors = ["Alexander Kenji Berthold <aks.kenji@protonmail.com>", "masenius"]
+edition = "2021"
+license = "MIT"
+description = "Zellij compact-bar plugin with configurable tab label format"
+repository = "https://github.com/masenius/zellij-compact-bar"
+
+[dependencies]
+ansi_term = { version = "0.12.1", default-features = false }
+unicode-width = { version = "0.2.2", default-features = false }
+zellij-tile = "0.45.1"
+zellij-tile-utils = "0.45.1"
