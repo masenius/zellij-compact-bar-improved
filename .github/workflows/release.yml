@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -25,7 +25,7 @@ jobs:
         run: cargo build --release --target wasm32-wasip1
 
       - name: Upload compact-bar artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: compact-bar.wasm
           path: target/wasm32-wasip1/release/compact-bar.wasm
@@ -39,7 +39,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0 # Required for GitVersion to calculate version based on history
 
@@ -53,7 +53,7 @@ jobs:
         uses: gittools/actions/gitversion/execute@v4
 
       - name: Download compact-bar artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: compact-bar.wasm
 
@@ -61,7 +61,7 @@ jobs:
         run: sha256sum compact-bar.wasm > compact-bar.wasm.sha256sum
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.gitversion.outputs.majorMinorPatch }}
           name: Release ${{ steps.gitversion.outputs.majorMinorPatch }}
