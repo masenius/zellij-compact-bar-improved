@@ -84,8 +84,6 @@ pane_format "{cwd} - {process}"
 
 - The `tooltip` config option is not supported for URL/file-based plugins
   (a Zellij limitation), so keybind hint tooltips won't appear.
-- Because tab numbers are derived from tab order, they renumber automatically
-  whenever tabs are opened, closed, or moved.
 
 ## Building
 
