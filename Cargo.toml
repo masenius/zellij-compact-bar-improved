@@ -10,5 +10,5 @@ repository = "https://github.com/masenius/zellij-compact-bar-improved"
 [dependencies]
 ansi_term = { version = "0.12.1", default-features = false }
 unicode-width = { version = "0.2.2", default-features = false }
-zellij-tile = "0.45.1"
-zellij-tile-utils = "0.45.1"
+zellij-tile = "0.46.0"
+zellij-tile-utils = "0.46.0"
